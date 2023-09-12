@@ -1,4 +1,6 @@
 use std::{collections::HashMap, env, fs, io};
+// TODO: implement message passing to allow execution while we keep lexing the input
+// so replace the vec for mpsc
 
 #[derive(Debug, Clone)]
 pub struct Tokenizer {
@@ -8,7 +10,7 @@ pub struct Tokenizer {
     functions: HashMap<String, Vec<Token>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 enum Token {
     Division,
     Multiply,
@@ -18,13 +20,20 @@ enum Token {
     Operation(String),
     Num(i32),
     Unknown(String),
-    Func(String),
+    FuncDefinition(String),
+    FuncCall(String),
 }
 
 impl Token {
-    fn is_valid_operator(op: &str) -> bool {
+    pub fn is_valid_operator(op: &str) -> bool {
         matches!(op, "DUP" | "SWAP" | "DROP" | "OVER")
     }
+    pub fn is_func(&self) -> bool {
+        matches!(self, Token::FuncCall(_))
+    }
+}
+fn is_valid_operator(op: &str) -> bool {
+    matches!(op, "DUP" | "SWAP" | "DROP" | "OVER")
 }
 
 impl Tokenizer {
@@ -68,16 +77,16 @@ impl Tokenizer {
             }
         }
         let mut words_iter = aux.split_whitespace();
-        dbg!(&words_iter);
-        let identifier = words_iter.nth(0).unwrap();
+        let identifier = words_iter.next().unwrap();
         dbg!(&identifier);
+        dbg!(&words_iter);
         // TODO: Find how to join words from an iterator
         let body = words_iter.fold(String::new(), |acc, word| acc + " " + word);
         let x = parse(&body);
-        self.functions.insert(identifier.to_string(), x);
+        self.functions.insert(identifier.to_string(), x.clone());
         dbg!(&self.functions);
 
-        Some(Token::Func(identifier.to_string()))
+        Some(Token::FuncDefinition(identifier.to_string()))
     }
 
     fn read_operation(&mut self, char: char) -> Option<Token> {
@@ -90,7 +99,13 @@ impl Tokenizer {
                 break;
             }
         }
-        Some(Token::Operation(s.to_owned()))
+        if is_valid_operator(&s) {
+            Some(Token::Operation(s.to_owned()))
+        } else if self.functions.get(&s).is_some() {
+            Some(Token::FuncCall(s.to_owned()))
+        } else {
+            Some(Token::Unknown(s.to_owned()))
+        }
     }
 
     fn tokenize_numer(&mut self, char: char) -> Option<Token> {
@@ -109,7 +124,7 @@ impl Tokenizer {
 
     fn read_whitespace(&mut self) {
         while let Some(c) = self.peek() {
-            if c.is_whitespace() {
+            if c.is_whitespace() || c == ' ' {
                 self.read_next_char();
             } else {
                 break;
@@ -140,9 +155,15 @@ fn parse(input: &str) -> Vec<Token> {
     dbg!(&tokenizer);
     let mut tokens = Vec::new();
     while let Some(token) = tokenizer.next_token() {
-        tokens.push(token);
+        match token {
+            Token::FuncCall(func_identifier) => {
+                let mut func_tokens = tokenizer.functions.get(&func_identifier).unwrap().clone();
+                tokens.append(&mut func_tokens);
+            }
+            token => tokens.push(token),
+        }
     }
-    tokens.clone()
+    tokens
 }
 
 #[derive(Debug)]
@@ -162,17 +183,19 @@ impl Program {
     }
     fn eval(&mut self, input: &str) -> Result<(), Error> {
         let tokens = parse(input);
+        dbg!(&tokens);
         for token in tokens {
             match token {
                 Token::Num(n) => self.stack.push(n),
                 Token::Period => {
-                    if self.stack.len() >= 1 {
+                    if !self.stack.is_empty() {
                         println!("{:#?}", self.stack.last())
                     } else {
                         return Err(Error::StackUnderflow);
                     }
                 }
-                // Token::Func(f) => {self.}
+                Token::FuncCall(_) => (),
+                Token::FuncDefinition(_) => (),
                 Token::Operation(op) => {
                     let nums = self.stack.len();
 
@@ -189,7 +212,7 @@ impl Program {
                             self.stack.push(num1);
                         }
                         "OVER" if nums >= 2 => {
-                            self.stack.push(self.stack[1].clone());
+                            self.stack.push(self.stack[1]);
                         }
                         _ => return Err(Error::StackUnderflow),
                     }
@@ -222,11 +245,10 @@ impl Program {
 }
 
 pub fn parse2_test() {
-    // let aux = parse(input);
     let env = env::args().skip(1).collect::<String>();
     dbg!(&env);
     let mut s = Program::new();
-    if env == "" {
+    if env.is_empty() {
         let stdin = io::stdin();
         loop {
             let mut user_input = String::new();
