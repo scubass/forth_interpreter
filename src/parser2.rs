@@ -1,4 +1,8 @@
-use std::{collections::HashMap, env, fs, io};
+use std::{
+    collections::HashMap,
+    env, fs, io,
+    sync::mpsc::{self, channel},
+};
 // TODO: implement message passing to allow execution while we keep lexing the input
 // so replace the vec for mpsc
 
@@ -22,16 +26,9 @@ enum Token {
     Unknown(String),
     FuncDefinition(String),
     FuncCall(String),
+    Eof,
 }
 
-impl Token {
-    pub fn is_valid_operator(op: &str) -> bool {
-        matches!(op, "DUP" | "SWAP" | "DROP" | "OVER")
-    }
-    pub fn is_func(&self) -> bool {
-        matches!(self, Token::FuncCall(_))
-    }
-}
 fn is_valid_operator(op: &str) -> bool {
     matches!(op, "DUP" | "SWAP" | "DROP" | "OVER")
 }
@@ -76,15 +73,26 @@ impl Tokenizer {
                 self.read_next_char();
             }
         }
+        // dbg!(&aux);
         let mut words_iter = aux.split_whitespace();
         let identifier = words_iter.next().unwrap();
-        dbg!(&identifier);
-        dbg!(&words_iter);
-        // TODO: Find how to join words from an iterator
+        // dbg!(&identifier);
+        // dbg!(&words_iter);
+        // TODO: Find how to join words from an iterator, or more efficient way
         let body = words_iter.fold(String::new(), |acc, word| acc + " " + word);
-        let x = parse(&body);
-        self.functions.insert(identifier.to_string(), x.clone());
-        dbg!(&self.functions);
+        let (sender, receiver) = mpsc::channel();
+        parse(sender, &body);
+        let mut aux_tokens = Vec::new();
+        loop {
+            let t = receiver.recv().unwrap();
+            match t {
+                Token::Eof => break,
+                token => aux_tokens.push(token),
+            }
+        }
+        // dbg!(&aux_tokens);
+        self.functions.insert(identifier.to_string(), aux_tokens);
+        // dbg!(&self.functions);
 
         Some(Token::FuncDefinition(identifier.to_string()))
     }
@@ -150,11 +158,12 @@ impl Tokenizer {
     }
 }
 
-fn parse(input: &str) -> Vec<Token> {
+fn parse_to_vec(input: &str) -> Vec<Token> {
     let mut tokenizer = Tokenizer::new(input);
-    dbg!(&tokenizer);
+    // dbg!(&tokenizer);
     let mut tokens = Vec::new();
     while let Some(token) = tokenizer.next_token() {
+        // send the token to the eval function
         match token {
             Token::FuncCall(func_identifier) => {
                 let mut func_tokens = tokenizer.functions.get(&func_identifier).unwrap().clone();
@@ -164,6 +173,25 @@ fn parse(input: &str) -> Vec<Token> {
         }
     }
     tokens
+}
+fn parse(sender: mpsc::Sender<Token>, input: &str) {
+    let mut tokenizer = Tokenizer::new(input);
+    // dbg!(&tokenizer);
+    while let Some(token) = tokenizer.next_token() {
+        // send the token to the eval function
+        match token {
+            Token::FuncCall(ref func_identifier) => {
+                let func_tokens = tokenizer.functions.get(func_identifier).unwrap().clone();
+                for t in &func_tokens {
+                    let _ = sender.send(t.clone());
+                }
+            }
+            token => {
+                let _ = sender.send(token);
+            }
+        }
+    }
+    let _ = sender.send(Token::Eof);
 }
 
 #[derive(Debug)]
@@ -182,10 +210,12 @@ impl Program {
         Program { stack: Vec::new() }
     }
     fn eval(&mut self, input: &str) -> Result<(), Error> {
-        let tokens = parse(input);
-        dbg!(&tokens);
-        for token in tokens {
+        let (sender, reciver) = channel::<Token>();
+        parse(sender, input);
+        loop {
+            let token = reciver.recv().unwrap();
             match token {
+                Token::Eof => break,
                 Token::Num(n) => self.stack.push(n),
                 Token::Period => {
                     if !self.stack.is_empty() {
@@ -239,7 +269,6 @@ impl Program {
                 }
             }
         }
-        // now we need to
         Ok(())
     }
 }
