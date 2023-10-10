@@ -2,9 +2,8 @@ use std::{
     collections::HashMap,
     env, fs, io,
     sync::mpsc::{self, channel},
+    thread,
 };
-// TODO: implement message passing to allow execution while we keep lexing the input
-// so replace the vec for mpsc
 
 #[derive(Debug, Clone)]
 pub struct Tokenizer {
@@ -158,25 +157,8 @@ impl Tokenizer {
     }
 }
 
-fn parse_to_vec(input: &str) -> Vec<Token> {
-    let mut tokenizer = Tokenizer::new(input);
-    // dbg!(&tokenizer);
-    let mut tokens = Vec::new();
-    while let Some(token) = tokenizer.next_token() {
-        // send the token to the eval function
-        match token {
-            Token::FuncCall(func_identifier) => {
-                let mut func_tokens = tokenizer.functions.get(&func_identifier).unwrap().clone();
-                tokens.append(&mut func_tokens);
-            }
-            token => tokens.push(token),
-        }
-    }
-    tokens
-}
 fn parse(sender: mpsc::Sender<Token>, input: &str) {
     let mut tokenizer = Tokenizer::new(input);
-    // dbg!(&tokenizer);
     while let Some(token) = tokenizer.next_token() {
         // send the token to the eval function
         match token {
@@ -199,7 +181,7 @@ struct Program {
     stack: Vec<i32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum Error {
     DivisionByZero,
     StackUnderflow,
@@ -209,9 +191,11 @@ impl Program {
     pub fn new() -> Self {
         Program { stack: Vec::new() }
     }
-    fn eval(&mut self, input: &str) -> Result<(), Error> {
+    fn eval(&mut self, input: String) -> Result<(), Error> {
         let (sender, reciver) = channel::<Token>();
-        parse(sender, input);
+        thread::spawn(move || {
+            parse(sender, &input);
+        });
         loop {
             let token = reciver.recv().unwrap();
             match token {
@@ -273,16 +257,15 @@ impl Program {
     }
 }
 
-pub fn parse2_test() {
+pub fn parser() {
     let env = env::args().skip(1).collect::<String>();
-    dbg!(&env);
     let mut s = Program::new();
     if env.is_empty() {
         let stdin = io::stdin();
         loop {
             let mut user_input = String::new();
             stdin.read_line(&mut user_input).unwrap();
-            let e = s.eval(&user_input);
+            let e = s.eval(user_input);
             if e.is_err() {
                 println!("{:#?}", e);
                 break;
@@ -290,11 +273,38 @@ pub fn parse2_test() {
         }
     } else {
         let f = fs::read_to_string(env).expect("Failed to read file");
-        let e = s.eval(&f);
+        let e = s.eval(f);
         if e.is_err() {
             println!("{:#?}", e);
         } else {
             println!("{:#?}", s.stack);
         }
+    }
+}
+
+mod test_lexer {
+    #[test]
+    fn function() {
+        use crate::parser::Program;
+        let text = ":hola 1 2 +;\nhola hola".to_string();
+        let mut s = Program::new();
+        s.eval(text).unwrap();
+        assert_eq!(s.stack, [3, 3]);
+    }
+    #[test]
+    fn operations() {
+        use crate::parser::Program;
+        let text = "1 1 2 1 2 +".to_string();
+        let mut s = Program::new();
+        s.eval(text).unwrap();
+        assert_eq!(s.stack, [1, 1, 2, 3]);
+    }
+    #[test]
+    fn invalid_operations() {
+        use crate::parser::Error;
+        use crate::parser::Program;
+        let text = "1 +".to_string();
+        let mut s = Program::new();
+        debug_assert_eq!(s.eval(text).unwrap_err(), Error::StackUnderflow);
     }
 }
